@@ -9,18 +9,11 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Fullscreen mode
+  // Fullscreen
   SystemChrome.setEnabledSystemUIMode(
     SystemUiMode.immersiveSticky,
   );
 
-  // Landscape lock optional
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.landscapeLeft,
-    DeviceOrientation.landscapeRight,
-  ]);
-
-  // Screen always ON
   await WakelockPlus.enable();
 
   runApp(const MyApp());
@@ -33,7 +26,6 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Code Server',
       theme: ThemeData.dark(),
       home: const WebScreen(),
     );
@@ -48,17 +40,19 @@ class WebScreen extends StatefulWidget {
 }
 
 class _WebScreenState extends State<WebScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   InAppWebViewController? webViewController;
 
-  // YAHAN APNA FIX URL DAALO
-  final String fixedUrl = 'http://10.103.60.191:3000';
+  final String fixedUrl = 'http://192.168.1.100:8080';
 
-  bool isLoading = true;
+  bool firstLoadFinished = false;
   bool isOffline = false;
 
-  Timer? reloadTimer;
   StreamSubscription? connectivitySubscription;
+  Timer? healthCheckTimer;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
@@ -67,49 +61,52 @@ class _WebScreenState extends State<WebScreen>
     WidgetsBinding.instance.addObserver(this);
 
     startConnectivityListener();
-    startAutoReload();
+    startHealthCheck();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    reloadTimer?.cancel();
+
     connectivitySubscription?.cancel();
+    healthCheckTimer?.cancel();
+
     super.dispose();
   }
 
-  // App background se aaye to reload
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      webViewController?.reload();
-    }
-  }
+  // REMOVE AUTO RELOAD ON RESUME
+  // Split screen issue solved
 
   void startConnectivityListener() {
     connectivitySubscription =
-        Connectivity().onConnectivityChanged.listen((result) {
-      if (result == ConnectivityResult.none) {
-        setState(() {
-          isOffline = true;
-        });
-      } else {
-        setState(() {
-          isOffline = false;
-        });
+        Connectivity().onConnectivityChanged.listen((result) async {
+      final connected = result != ConnectivityResult.none;
 
-        webViewController?.reload();
+      if (!connected) {
+        if (mounted) {
+          setState(() {
+            isOffline = true;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            isOffline = false;
+          });
+        }
       }
     });
   }
 
-  void startAutoReload() {
-    reloadTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+  // SMART HEALTH CHECK
+  void startHealthCheck() {
+    healthCheckTimer =
+        Timer.periodic(const Duration(seconds: 20), (timer) async {
       try {
         await webViewController?.evaluateJavascript(
-          source: 'document.body.innerHTML.length',
+          source: "document.title",
         );
-      } catch (e) {
+      } catch (_) {
         webViewController?.reload();
       }
     });
@@ -117,111 +114,135 @@ class _WebScreenState extends State<WebScreen>
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
+
     return Scaffold(
-      body: SafeArea(
-        child: Stack(
-          children: [
-            RefreshIndicator(
-              onRefresh: () async {
-                await webViewController?.reload();
-              },
-              child: InAppWebView(
-                initialUrlRequest: URLRequest(
-                  url: WebUri(fixedUrl),
+      resizeToAvoidBottomInset: true,
+
+      body: Stack(
+        children: [
+          InAppWebView(
+            initialUrlRequest: URLRequest(
+              url: WebUri(fixedUrl),
+            ),
+
+            initialSettings: InAppWebViewSettings(
+              javaScriptEnabled: true,
+              mediaPlaybackRequiresUserGesture: false,
+              allowsInlineMediaPlayback: true,
+
+              // IMPORTANT FIXES
+              useHybridComposition: true,
+              supportZoom: false,
+              transparentBackground: false,
+              disableContextMenu: false,
+
+              // KEYBOARD FIX
+              isTextInteractionEnabled: true,
+
+              // KEEP WEBVIEW ALIVE
+              useShouldOverrideUrlLoading: false,
+
+              // DESKTOP MODE
+              preferredContentMode:
+                  UserPreferredContentMode.DESKTOP,
+
+              // PERFORMANCE
+              verticalScrollBarEnabled: false,
+              horizontalScrollBarEnabled: false,
+
+              // iPad typing fix
+              allowsBackForwardNavigationGestures: false,
+            ),
+
+            onWebViewCreated: (controller) async {
+              webViewController = controller;
+            },
+
+            onLoadStop: (controller, url) async {
+              if (!firstLoadFinished) {
+                setState(() {
+                  firstLoadFinished = true;
+                });
+              }
+
+              // Better keyboard + focus fix
+              await controller.evaluateJavascript(
+                source: """
+                  window.focus();
+
+                  document.body.style.overscrollBehavior = 'none';
+
+                  document.addEventListener('touchstart', function(){}, true);
+
+                  const meta = document.createElement('meta');
+                  meta.name = 'viewport';
+                  meta.content =
+                  'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+
+                  document.getElementsByTagName('head')[0].appendChild(meta);
+                """,
+              );
+            },
+
+            // SMART ERROR HANDLING
+            onReceivedError:
+                (controller, request, error) async {
+
+              // reload only if main page failed
+              if (request.isForMainFrame ?? false) {
+                Future.delayed(const Duration(seconds: 5), () {
+                  webViewController?.reload();
+                });
+              }
+            },
+
+            onReceivedHttpError:
+                (controller, request, response) async {
+              if (response.statusCode >= 500) {
+                Future.delayed(const Duration(seconds: 5), () {
+                  webViewController?.reload();
+                });
+              }
+            },
+          ),
+
+          // ONLY FIRST TIME LOADER
+          if (!firstLoadFinished)
+            Container(
+              color: Colors.black,
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 20),
+                    Text(
+                      "Connecting to Server...",
+                      style: TextStyle(fontSize: 18),
+                    ),
+                  ],
                 ),
-
-                initialSettings: InAppWebViewSettings(
-                  javaScriptEnabled: true,
-                  useShouldOverrideUrlLoading: true,
-                  mediaPlaybackRequiresUserGesture: false,
-                  allowsInlineMediaPlayback: true,
-                  iframeAllowFullscreen: true,
-                  supportZoom: false,
-                  transparentBackground: false,
-                  disableContextMenu: false,
-                  allowsBackForwardNavigationGestures: false,
-                  verticalScrollBarEnabled: false,
-                  horizontalScrollBarEnabled: false,
-                  useHybridComposition: true,
-                  preferredContentMode:
-                      UserPreferredContentMode.DESKTOP,
-                ),
-
-                onWebViewCreated: (controller) {
-                  webViewController = controller;
-                },
-
-                onLoadStart: (controller, url) {
-                  setState(() {
-                    isLoading = true;
-                  });
-                },
-
-                onLoadStop: (controller, url) async {
-                  setState(() {
-                    isLoading = false;
-                  });
-
-                  // Better desktop feel
-                  await controller.evaluateJavascript(
-                    source: '''
-                      document.body.style.overscrollBehavior = 'none';
-
-                      const meta = document.createElement('meta');
-                      meta.name = 'viewport';
-                      meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
-                      document.getElementsByTagName('head')[0].appendChild(meta);
-                    ''',
-                  );
-                },
-
-                onReceivedError: (controller, request, error) async {
-                  Future.delayed(const Duration(seconds: 3), () {
-                    webViewController?.reload();
-                  });
-                },
-
-                shouldOverrideUrlLoading:
-                    (controller, navigationAction) async {
-                  return NavigationActionPolicy.ALLOW;
-                },
               ),
             ),
 
-            // Loading Screen
-            if (isLoading)
-              Container(
-                color: Colors.black,
-                child: const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 20),
-                      Text(
-                        'Connecting to Code Server...',
-                        style: TextStyle(fontSize: 18),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-            // Offline Banner
-            if (isOffline)
-              Positioned(
-                top: 20,
-                left: 20,
-                right: 20,
+          // OFFLINE BANNER
+          if (isOffline)
+            Positioned(
+              top: 40,
+              left: 20,
+              right: 20,
+              child: Material(
+                color: Colors.transparent,
                 child: Container(
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
                     color: Colors.red,
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(14),
                   ),
                   child: const Center(
                     child: Text(
-                      'No Internet / Server Offline',
+                      "No Internet Connection",
                       style: TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
@@ -230,8 +251,8 @@ class _WebScreenState extends State<WebScreen>
                   ),
                 ),
               ),
-          ],
-        ),
+            ),
+        ],
       ),
     );
   }
