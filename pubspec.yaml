@@ -32,8 +32,8 @@ dependencies:
     sdk: flutter
 
   flutter_inappwebview: ^6.0.0
-  wakelock_plus: ^1.2.5
   connectivity_plus: ^6.0.3
+  wakelock_plus: ^1.2.5
 
 dev_dependencies:
   flutter_test:
