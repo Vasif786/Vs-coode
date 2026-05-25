@@ -43,7 +43,7 @@ class _WebScreenState extends State<WebScreen>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   InAppWebViewController? webViewController;
 
-  final String fixedUrl = 'http://192.168.1.100:8080';
+  final String fixedUrl = 'http://10.103.60.191:3000';
 
   bool firstLoadFinished = false;
   bool isOffline = false;
