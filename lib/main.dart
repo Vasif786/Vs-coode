@@ -199,7 +199,7 @@ class _WebScreenState extends State<WebScreen>
 
             onReceivedHttpError:
                 (controller, request, response) async {
-              if (response.statusCode >= 500) {
+              if (response.statusCode != null && response.statusCode! >= 500) {
                 Future.delayed(const Duration(seconds: 5), () {
                   webViewController?.reload();
                 });
